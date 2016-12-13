@@ -277,6 +277,7 @@ static inline struct windows_device_handle_priv *_device_handle_priv(
 struct windows_transfer_priv {
 	struct winfd pollable_fd;
 	uint8_t interface_number;
+	WINUSB_ISOCH_BUFFER_HANDLE iso_buffer_handle; // eventual isochronous buffer
 	uint8_t *hid_buffer; // 1 byte extended data buffer, required for HID
 	uint8_t *hid_dest;   // transfer buffer destination, required for HID
 	size_t hid_expected_size;
@@ -759,6 +760,45 @@ typedef BOOL (WINAPI *WinUsb_ResetDevice_t)(
 	WINUSB_INTERFACE_HANDLE InterfaceHandle
 );
 
+typedef void *WINUSB_ISOCH_BUFFER_HANDLE, *PWINUSB_ISOCH_BUFFER_HANDLE;
+
+typedef BOOL (WINAPI *WinUsb_RegisterIsochBuffer_t)(
+	WINUSB_INTERFACE_HANDLE InterfaceHandle,
+	UCHAR PipeID,
+	PVOID Buffer,
+	ULONG BufferLength,
+	PWINUSB_ISOCH_BUFFER_HANDLE BufferHandle
+);
+
+typedef BOOL (WINAPI *WinUsb_UnregisterIsochBuffer_t)(
+	PWINUSB_ISOCH_BUFFER_HANDLE BufferHandle
+);
+
+typedef BOOL (WINAPI *WinUsb_WriteIsochPipeAsap_t)(
+	PWINUSB_ISOCH_BUFFER_HANDLE BufferHandle,
+	ULONG Offset,
+	ULONG Length,
+	BOOL ContinueStream,
+	LPOVERLAPPED Overlapped
+);
+
+typedef LONG USBD_STATUS;
+typedef struct {
+	ULONG Offset;
+	ULONG Length;
+	USBD_STATUS Status;
+} USBD_ISO_PACKET_DESCRIPTOR, *PUSBD_ISO_PACKET_DESCRIPTOR;
+
+typedef BOOL (WINAPI *WinUsb_ReadIsochPipeAsap_t)(
+	PWINUSB_ISOCH_BUFFER_HANDLE BufferHandle,
+	ULONG Offset,
+	ULONG Length,
+	BOOL ContinueStream,
+	ULONG NumberOfPackets,
+	PUSBD_ISO_PACKET_DESCRIPTOR IsoPacketDescriptors,
+	LPOVERLAPPED Overlapped
+);
+
 /* /!\ These must match the ones from the official libusbk.h */
 typedef enum _KUSB_FNID {
 	KUSB_FNID_Init,
@@ -839,6 +879,10 @@ struct winusb_interface {
 	WinUsb_SetPowerPolicy_t SetPowerPolicy;
 	WinUsb_WritePipe_t WritePipe;
 	WinUsb_ResetDevice_t ResetDevice;
+	WinUsb_RegisterIsochBuffer_t RegisterIsochBuffer;
+	WinUsb_UnregisterIsochBuffer_t UnregisterIsochBuffer;
+	WinUsb_WriteIsochPipeAsap_t WriteIsochPipeAsap;
+	WinUsb_ReadIsochPipeAsap_t ReadIsochPipeAsap;
 };
 
 /* hid.dll interface */
