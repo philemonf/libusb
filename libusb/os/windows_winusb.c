@@ -2383,6 +2383,7 @@ static int winusbx_init(int sub_api, struct libusb_context *ctx)
 		WinUSBOnly_Set(UnregisterIsochBuffer);
 		WinUSBOnly_Set(WriteIsochPipeAsap);
 		WinUSBOnly_Set(ReadIsochPipeAsap);
+        WinUSBOnly_Set(QueryPipeEx);
 
 		if (!native_winusb)
 			WinUSBX_Set(ResetDevice);
@@ -2900,6 +2901,7 @@ static int winusbx_is_iso_supported(int sub_api)
 	WINUSBX_CHECK_API_SUPPORTED(ReadIsochPipeAsap);
 	WINUSBX_CHECK_API_SUPPORTED(WriteIsochPipeAsap);
 	WINUSBX_CHECK_API_SUPPORTED(UnregisterIsochBuffer);
+    WINUSBX_CHECK_API_SUPPORTED(QueryPipeEx);
 
 
 	if (sizeof(struct libusb_iso_packet_descriptor) != sizeof(USBD_ISO_PACKET_DESCRIPTOR))
@@ -2913,27 +2915,91 @@ static int winusbx_is_iso_supported(int sub_api)
 
 static bool winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libusb_transfer *transfer)
 {
-	bool ret;
-	struct windows_transfer_priv *transfer_priv = usbi_transfer_get_os_priv(LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer));
+	BOOL ret, unregistered;
+    USB_INTERFACE_DESCRIPTOR interface_desc;
+    WINUSB_PIPE_INFORMATION_EX pipe_info_ex;    
+    WINUSB_ISOCH_BUFFER_HANDLE bufferHandle;
+    ULONG iso_transfer_size_multiple;
+    int pipeIdx;
+    int i;
+    unsigned data;
+	struct windows_transfer_priv *transfer_priv = (struct windows_transfer_priv *)usbi_transfer_get_os_priv(LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer));
+    
+    /* Query the interface information. */
+    ret = WinUSBX[sub_api].QueryInterfaceSettings(pwfd->handle, 0, &interface_desc);
+    if (!ret) {
+        usbi_dbg("Couldn't query interface settings for endpoint 0x%02x. Error code: %d", transfer->endpoint, GetLastError());
+        return false;
+    }
 
-	// register isochronous buffer
-	if (transfer_priv->iso_buffer_handle == NULL)
-	{
-		ret = WinUSBX[sub_api].RegisterIsochBuffer(pwfd->handle, transfer->endpoint, transfer->buffer, transfer->length, &transfer_priv->iso_buffer_handle);
-		if (!ret) {
-			usbi_dbg("RegisterIsochBuffer failed");
-			return false;
-		}
+    /* Query the pipe extended information to find the pipe index corresponding to the endpoint. */
+    for (pipeIdx = 0; pipeIdx < interface_desc.bNumEndpoints; ++pipeIdx) {
+        ret = WinUSBX[sub_api].QueryPipeEx(pwfd->handle, transfer_priv->interface_number, pipeIdx, &pipe_info_ex);
+        if (!ret) {
+            usbi_dbg("Couldn't query interface settings for USB pipe %d. Error code: %d", pipeIdx, GetLastError());
+            return false;
+        }
+
+        if (pipe_info_ex.PipeId == transfer->endpoint && pipe_info_ex.PipeType == UsbdPipeTypeIsochronous) {
+            break;
+        }
+    }
+
+    /* Make sure we found the index. */
+    if (pipeIdx >= interface_desc.bNumEndpoints) {
+        usbi_dbg("Couldn't find the isochronous endpoint %02x.", transfer->endpoint);
+        return false;
+    }
+
+    iso_transfer_size_multiple = ( pipe_info_ex.MaximumBytesPerInterval * 8 ) / pipe_info_ex.Interval;
+    if (transfer->length % iso_transfer_size_multiple != 0)
+    {
+        usbi_dbg("The length of isochronous buffer must be a multiple of the MaximumBytesPerInterval * 8 / Interval");
+        return false;
+    }
+
+	ret = WinUSBX[sub_api].RegisterIsochBuffer(pwfd->handle, pipe_info_ex.PipeId, transfer->buffer, transfer->length, &bufferHandle);
+	if (!ret) {
+		usbi_dbg("RegisterIsochBuffer failed");
+		return false;
 	}
 
 	// start the transfer
-	if (IS_XFERIN(transfer)) {
-		ret = WinUSBX[sub_api].ReadIsochPipeAsap(&transfer_priv->iso_buffer_handle, 0, transfer->length, TRUE,
-			transfer->num_iso_packets, (PUSBD_ISO_PACKET_DESCRIPTOR)(transfer->iso_packet_desc), pwfd->overlapped);
+	if (IS_XFERIN(transfer)){
+        USBD_ISO_PACKET_DESCRIPTOR desc[ 8 ];
+        memset( desc, 0, sizeof( desc ) );
+		ret = WinUSBX[sub_api].ReadIsochPipeAsap(
+            bufferHandle, 
+            0,
+            transfer->length,
+            FALSE,
+			8,
+            desc,
+            NULL );
+
+        for ( i = 0; i < 8; ++i )
+        {
+            printf( "desc[%d] = %u %u %u\n" , i, desc[i].Length, desc[i].Offset, desc[i].Status );
+            data = *((unsigned *)(transfer->buffer + desc[i].Offset));
+            printf( "data: %u\n", data );
+        }
 	}
 	else {
-		ret = WinUSBX[sub_api].WriteIsochPipeAsap(&transfer_priv->iso_buffer_handle, 0, transfer->length, TRUE, pwfd->overlapped);
+		ret = WinUSBX[sub_api].WriteIsochPipeAsap(&bufferHandle, 0, transfer->length, FALSE, pwfd->overlapped);
 	}
+
+    if (!ret)
+    {
+        printf("Isochronous transfer failed: %d\n", GetLastError());
+    }
+
+    unregistered = WinUSBX[sub_api].UnregisterIsochBuffer( bufferHandle );
+    if (!unregistered)
+    {
+        printf("UnregisterIsochBuffer failed: %d\n", GetLastError());
+        usbi_dbg("UnregisterIsochBuffer failed");
+        return false;
+    }
 
 	return ret;
 }

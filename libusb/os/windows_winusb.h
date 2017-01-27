@@ -277,7 +277,6 @@ static inline struct windows_device_handle_priv *_device_handle_priv(
 struct windows_transfer_priv {
 	struct winfd pollable_fd;
 	uint8_t interface_number;
-	WINUSB_ISOCH_BUFFER_HANDLE iso_buffer_handle; // eventual isochronous buffer
 	uint8_t *hid_buffer; // 1 byte extended data buffer, required for HID
 	uint8_t *hid_dest;   // transfer buffer destination, required for HID
 	size_t hid_expected_size;
@@ -799,6 +798,21 @@ typedef BOOL (WINAPI *WinUsb_ReadIsochPipeAsap_t)(
 	LPOVERLAPPED Overlapped
 );
 
+typedef struct {
+    USBD_PIPE_TYPE PipeType;
+    UCHAR PipeId;
+    USHORT MaximumPacketSize;
+    UCHAR Interval;
+    ULONG MaximumBytesPerInterval;
+} WINUSB_PIPE_INFORMATION_EX, *PWINUSB_PIPE_INFORMATION_EX;
+
+typedef BOOL (WINAPI *WinUsb_QueryPipeEx_t)(
+    PWINUSB_INTERFACE_HANDLE InterfaceHandle,
+    UCHAR AlternateInterfaceHandle,
+    UCHAR PipeIndex,
+    PWINUSB_PIPE_INFORMATION_EX PipeInformationEx
+);
+
 /* /!\ These must match the ones from the official libusbk.h */
 typedef enum _KUSB_FNID {
 	KUSB_FNID_Init,
@@ -883,6 +897,7 @@ struct winusb_interface {
 	WinUsb_UnregisterIsochBuffer_t UnregisterIsochBuffer;
 	WinUsb_WriteIsochPipeAsap_t WriteIsochPipeAsap;
 	WinUsb_ReadIsochPipeAsap_t ReadIsochPipeAsap;
+    WinUsb_QueryPipeEx_t QueryPipeEx;
 };
 
 /* hid.dll interface */
