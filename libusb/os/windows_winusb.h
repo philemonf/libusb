@@ -799,18 +799,18 @@ typedef BOOL (WINAPI *WinUsb_ReadIsochPipeAsap_t)(
 );
 
 typedef struct {
-    USBD_PIPE_TYPE PipeType;
-    UCHAR PipeId;
-    USHORT MaximumPacketSize;
-    UCHAR Interval;
-    ULONG MaximumBytesPerInterval;
+	USBD_PIPE_TYPE PipeType;
+	UCHAR PipeId;
+	USHORT MaximumPacketSize;
+	UCHAR Interval;
+	ULONG MaximumBytesPerInterval;
 } WINUSB_PIPE_INFORMATION_EX, *PWINUSB_PIPE_INFORMATION_EX;
 
 typedef BOOL (WINAPI *WinUsb_QueryPipeEx_t)(
-    PWINUSB_INTERFACE_HANDLE InterfaceHandle,
-    UCHAR AlternateInterfaceHandle,
-    UCHAR PipeIndex,
-    PWINUSB_PIPE_INFORMATION_EX PipeInformationEx
+	PWINUSB_INTERFACE_HANDLE InterfaceHandle,
+	UCHAR AlternateInterfaceHandle,
+	UCHAR PipeIndex,
+	PWINUSB_PIPE_INFORMATION_EX PipeInformationEx
 );
 
 /* /!\ These must match the ones from the official libusbk.h */

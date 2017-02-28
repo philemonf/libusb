@@ -2313,12 +2313,12 @@ const struct windows_usb_api_backend usb_api_backend[USB_API_MAX] = {
 			pLibK_GetProcAddress((PVOID *)&WinUSBX[i].fn, i, KUSB_FNID_##fn);	\
 	} while (0)
 
-#define WinUSBOnly_Set(fn)										                \
-	do {											                            \
-		if (native_winusb)								                        \
+#define WinUSBOnly_Set(fn)									\
+	do {											\
+		if (native_winusb)								\
 			WinUSBX[i].fn = (WinUsb_##fn##_t)GetProcAddress(h, "WinUsb_" #fn);	\
-		else                                                                    \
-			WinUSBX[i].fn = NULL;                                               \
+		else                                                                            \
+			WinUSBX[i].fn = NULL;                                                   \
 	} while (0)
 
 static int winusbx_init(int sub_api, struct libusb_context *ctx)
@@ -2383,7 +2383,7 @@ static int winusbx_init(int sub_api, struct libusb_context *ctx)
 		WinUSBOnly_Set(UnregisterIsochBuffer);
 		WinUSBOnly_Set(WriteIsochPipeAsap);
 		WinUSBOnly_Set(ReadIsochPipeAsap);
-        WinUSBOnly_Set(QueryPipeEx);
+		WinUSBOnly_Set(QueryPipeEx);
 
 		if (!native_winusb)
 			WinUSBX_Set(ResetDevice);
@@ -2895,15 +2895,15 @@ static int winusbx_is_iso_supported(int sub_api)
 #	define WINUSBX_CHECK_API_SUPPORTED(API)           \
 	if (WinUSBX[sub_api].API == NULL)                 \
 	{                                                 \
-		usbi_dbg(#API " isn't available");            \
-		return LIBUSB_ERROR_NOT_SUPPORTED;            \
+		usbi_dbg(#API " isn't available");        \
+		return LIBUSB_ERROR_NOT_SUPPORTED;        \
 	}
 
 	WINUSBX_CHECK_API_SUPPORTED(RegisterIsochBuffer);
 	WINUSBX_CHECK_API_SUPPORTED(ReadIsochPipeAsap);
 	WINUSBX_CHECK_API_SUPPORTED(WriteIsochPipeAsap);
 	WINUSBX_CHECK_API_SUPPORTED(UnregisterIsochBuffer);
-    WINUSBX_CHECK_API_SUPPORTED(QueryPipeEx);
+	WINUSBX_CHECK_API_SUPPORTED(QueryPipeEx);
 
 
 	if (sizeof(struct libusb_iso_packet_descriptor) != sizeof(USBD_ISO_PACKET_DESCRIPTOR))
@@ -2917,125 +2917,120 @@ static int winusbx_is_iso_supported(int sub_api)
 
 static enum libusb_transfer_status usbd_status_to_libusb_transfer_status(USBD_STATUS status)
 {
-    /* Based on https://msdn.microsoft.com/en-us/library/windows/hardware/ff539136(v=vs.85).aspx :
-     * USBD_STATUS have the most significant 4 bits indicating overall status and the rest gives the details. */
-    switch (status >> 28)
-    {
-    case 0x00: /* USBD_STATUS_SUCCESS */
-        return LIBUSB_TRANSFER_COMPLETED;
-    case 0x01: /* USBD_STATUS_PENDING */
-        return LIBUSB_TRANSFER_COMPLETED;
-    default: /* USBD_STATUS_ERROR */
-        switch (status & 0x0fffffff )
-        {
-        case 0xC0006000: /* USBD_STATUS_TIMEOUT */
-            return LIBUSB_TRANSFER_TIMED_OUT;
-        case 0xC0010000: /* USBD_STATUS_CANCELED */
-            return LIBUSB_TRANSFER_CANCELLED;
-        case 0xC0000030: /* USBD_STATUS_ENDPOINT_HALTED */
-            return LIBUSB_TRANSFER_STALL;
-        case 0xC0007000: /* USBD_STATUS_DEVICE_GONE */
-            return LIBUSB_TRANSFER_NO_DEVICE;
-        default:
-            usbi_dbg("USBD_STATUS 0x%08x translated to LIBUSB_TRANSFER_ERROR", status);
-            return LIBUSB_TRANSFER_ERROR;
-        }
-    }
+	/* Based on https://msdn.microsoft.com/en-us/library/windows/hardware/ff539136(v=vs.85).aspx :
+	 * USBD_STATUS have the most significant 4 bits indicating overall status and the rest gives the details. */
+	switch (status >> 28) {
+	case 0x00: /* USBD_STATUS_SUCCESS */
+		return LIBUSB_TRANSFER_COMPLETED;
+	case 0x01: /* USBD_STATUS_PENDING */
+		return LIBUSB_TRANSFER_COMPLETED;
+	default: /* USBD_STATUS_ERROR */
+		switch (status & 0x0fffffff ) {
+		case 0xC0006000: /* USBD_STATUS_TIMEOUT */
+			return LIBUSB_TRANSFER_TIMED_OUT;
+		case 0xC0010000: /* USBD_STATUS_CANCELED */
+			return LIBUSB_TRANSFER_CANCELLED;
+		case 0xC0000030: /* USBD_STATUS_ENDPOINT_HALTED */
+			return LIBUSB_TRANSFER_STALL;
+		case 0xC0007000: /* USBD_STATUS_DEVICE_GONE */
+			return LIBUSB_TRANSFER_NO_DEVICE;
+		default:
+			usbi_dbg("USBD_STATUS 0x%08x translated to LIBUSB_TRANSFER_ERROR", status);
+			return LIBUSB_TRANSFER_ERROR;
+		}
+	}
 }
 
 static bool winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libusb_transfer *transfer)
 {
-    BOOL ret, unregistered;
-    USB_INTERFACE_DESCRIPTOR interface_desc;
-    WINUSB_PIPE_INFORMATION_EX pipe_info_ex;    
-    WINUSB_ISOCH_BUFFER_HANDLE buffer_handle;
-    ULONG iso_transfer_size_multiple;
-    int idx;
-    struct windows_transfer_priv *transfer_priv = (struct windows_transfer_priv *)usbi_transfer_get_os_priv(LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer));
+	BOOL ret, unregistered;
+	USB_INTERFACE_DESCRIPTOR interface_desc;
+	WINUSB_PIPE_INFORMATION_EX pipe_info_ex;
+	WINUSB_ISOCH_BUFFER_HANDLE buffer_handle;
+	ULONG iso_transfer_size_multiple;
+	int idx;
+	struct windows_transfer_priv *transfer_priv = (struct windows_transfer_priv *)
+		usbi_transfer_get_os_priv(LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer));
     
-    /* Query the interface information. */
-    ret = WinUSBX[sub_api].QueryInterfaceSettings(pwfd->handle, 0, &interface_desc);
-    if (!ret) {
-        usbi_dbg("Couldn't query interface settings for endpoint 0x%02x. Error code: %d", transfer->endpoint, GetLastError());
-        return false;
-    }
+	/* Query the interface information. */
+	ret = WinUSBX[sub_api].QueryInterfaceSettings(pwfd->handle, 0, &interface_desc);
+	if (!ret) {
+		usbi_dbg("Couldn't query interface settings for endpoint 0x%02x. Error code: %d",
+			 transfer->endpoint, GetLastError());
+		return false;
+	}
 
-    /* Query the pipe extended information to find the pipe index corresponding to the endpoint. */
-    for (idx = 0; idx < interface_desc.bNumEndpoints; ++idx) {
-        ret = WinUSBX[sub_api].QueryPipeEx(pwfd->handle, transfer_priv->interface_number, idx, &pipe_info_ex);
-        if (!ret) {
-            usbi_dbg("Couldn't query interface settings for USB pipe %d. Error code: %d", idx, GetLastError());
-            return false;
-        }
+	/* Query the pipe extended information to find the pipe index corresponding to the endpoint. */
+	for (idx = 0; idx < interface_desc.bNumEndpoints; ++idx) {
+		ret = WinUSBX[sub_api].QueryPipeEx(pwfd->handle, transfer_priv->interface_number, idx, &pipe_info_ex);
+		if (!ret) {
+			usbi_dbg("Couldn't query interface settings for USB pipe %d. Error code: %d", idx, GetLastError());
+			return false;
+		}
 
-        if (pipe_info_ex.PipeId == transfer->endpoint && pipe_info_ex.PipeType == UsbdPipeTypeIsochronous) {
-            break;
-        }
-    }
+		if (pipe_info_ex.PipeId == transfer->endpoint && pipe_info_ex.PipeType == UsbdPipeTypeIsochronous) {
+			break;
+		}
+	}
 
-    /* Make sure we found the index. */
-    if (idx >= interface_desc.bNumEndpoints) {
-        usbi_dbg("Couldn't find the isochronous endpoint %02x.", transfer->endpoint);
-        return false;
-    }
+	/* Make sure we found the index. */
+	if (idx >= interface_desc.bNumEndpoints) {
+		usbi_dbg("Couldn't find the isochronous endpoint %02x.", transfer->endpoint);
+		return false;
+	}
 
-    /* WinUSB only supports isochronous transfers spanning a full USB frames. Later, we might be smarter about this
-     * and allocate a temporary buffer. However, this is harder than it seems as its destruction would depend on overlapped
-     * IO... */
-    iso_transfer_size_multiple = ( pipe_info_ex.MaximumBytesPerInterval * 8 ) / pipe_info_ex.Interval;
-    if (transfer->length % iso_transfer_size_multiple != 0)
-    {
-        usbi_dbg("The length of isochronous buffer must be a multiple of the MaximumBytesPerInterval * 8 / Interval");
-        /* WinUSB behaves very weirdly in this case: it returns as if it worked but fills the isochronous packets with unknwon USBD_STATUS, namely 0xffffffff.
-         * For a better user experience, we simulate a good behavior by setting an error that actually makes more sense. */
-        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-        return false;
-    }
+	/* WinUSB only supports isochronous transfers spanning a full USB frames. Later, we might be smarter about this
+	 * and allocate a temporary buffer. However, this is harder than it seems as its destruction would depend on overlapped
+	 * IO... */
+	iso_transfer_size_multiple = (pipe_info_ex.MaximumBytesPerInterval * 8) / pipe_info_ex.Interval;
+	if (transfer->length % iso_transfer_size_multiple != 0) {
+		usbi_dbg("The length of isochronous buffer must be a multiple of the MaximumBytesPerInterval * 8 / Interval");
+		/* WinUSB behaves very weirdly in this case: it returns as if it worked but fills the isochronous packets with 
+                 * unknwon USBD_STATUS, namely 0xffffffff. For a better user experience, we simulate a good behavior by setting
+		 * an error that actually makes more sense. */
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return false;
+	}
 
-    ret = WinUSBX[sub_api].RegisterIsochBuffer(pwfd->handle, transfer->endpoint, transfer->buffer, transfer->length, &buffer_handle);
+	ret = WinUSBX[sub_api].RegisterIsochBuffer(pwfd->handle, transfer->endpoint, transfer->buffer,
+						   transfer->length, &buffer_handle);
 	if (!ret) {
 		usbi_dbg("RegisterIsochBuffer failed");
 		return false;
 	}
 
-    /* Warning: from now on, one must not exit this function without disallocating resources! */
+	/* Warning: from now on, one must not exit this function without disallocating resources! */
 
-    /* Initiate the transfer. */
-    if (IS_XFERIN(transfer)) {
-        PUSBD_ISO_PACKET_DESCRIPTOR packet_descs = (PUSBD_ISO_PACKET_DESCRIPTOR)calloc(transfer->num_iso_packets, sizeof(USBD_ISO_PACKET_DESCRIPTOR));
-        if (packet_descs) {
-	    ret = WinUSBX[sub_api].ReadIsochPipeAsap(
-                buffer_handle,
-                0,
-                transfer->length,
-                FALSE,
-                transfer->num_iso_packets,
-                packet_descs,
-                NULL );
-            if (ret || GetLastError() == ERROR_IO_PENDING) {
-                for (idx = 0; idx < transfer->num_iso_packets; ++idx) {
-                    transfer->iso_packet_desc[idx].length = pipe_info_ex.MaximumBytesPerInterval;
-                    transfer->iso_packet_desc[idx].actual_length = packet_descs[idx].Length;
-                    transfer->iso_packet_desc[idx].status = usbd_status_to_libusb_transfer_status(packet_descs[idx].Status);
-                }
-            }
-        }
-        else {
-            usbi_dbg("Couldn't allocate %d isochronous packets", transfer->num_iso_packets);
-            ret = 0;
-        }
-        safe_free(packet_descs);
-    }
-    else {
-        ret = WinUSBX[sub_api].WriteIsochPipeAsap(&buffer_handle, 0, transfer->length, FALSE, pwfd->overlapped);
-    }
+	/* Initiate the transfer. */
+	if (IS_XFERIN(transfer)) {
+		PUSBD_ISO_PACKET_DESCRIPTOR packet_descs = (PUSBD_ISO_PACKET_DESCRIPTOR)
+			calloc(transfer->num_iso_packets, sizeof(USBD_ISO_PACKET_DESCRIPTOR));
+		if (packet_descs) {
+			ret = WinUSBX[sub_api].ReadIsochPipeAsap(buffer_handle, 0, transfer->length, FALSE,
+								 transfer->num_iso_packets, packet_descs, NULL);
+			if (ret || GetLastError() == ERROR_IO_PENDING) {
+				for (idx = 0; idx < transfer->num_iso_packets; ++idx) {
+					transfer->iso_packet_desc[idx].length = pipe_info_ex.MaximumBytesPerInterval;
+					transfer->iso_packet_desc[idx].actual_length = packet_descs[idx].Length;
+					transfer->iso_packet_desc[idx].status = usbd_status_to_libusb_transfer_status(packet_descs[idx].Status);
+				}
+			}
+		}
+		else {
+			usbi_dbg("Couldn't allocate %d isochronous packets", transfer->num_iso_packets);
+			ret = 0;
+		}
+		safe_free(packet_descs);
+	}
+	else {
+		ret = WinUSBX[sub_api].WriteIsochPipeAsap(&buffer_handle, 0, transfer->length, FALSE, pwfd->overlapped);
+	}
 
-    unregistered = WinUSBX[sub_api].UnregisterIsochBuffer(buffer_handle);
-    if (!unregistered)
-    {
-        usbi_dbg("UnregisterIsochBuffer failed");
-        return false;
-    }
+	unregistered = WinUSBX[sub_api].UnregisterIsochBuffer(buffer_handle);
+	if (!unregistered) {
+		usbi_dbg("UnregisterIsochBuffer failed");
+		return false;
+	}
 
 	return ret;
 }
