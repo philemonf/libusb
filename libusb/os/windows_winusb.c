@@ -2861,8 +2861,7 @@ static int winusbx_submit_transfer(int sub_api, struct usbi_transfer *itransfer,
 			usbi_free_fd(&wfd);
 			return LIBUSB_ERROR_IO;
 		}
-	}
-	else {
+	} else {
 		wfd.overlapped->Internal = STATUS_COMPLETED_SYNCHRONOUSLY;
 		wfd.overlapped->InternalHigh = (DWORD)transfer->length;
 	}
@@ -2939,6 +2938,20 @@ static enum libusb_transfer_status usbd_status_to_libusb_transfer_status(USBD_ST
 			return LIBUSB_TRANSFER_ERROR;
 		}
 	}
+}
+
+static int winusbx_free_isoch_buffer(struct libusb_transfer *transfer, void *isoch_buffer_handle)
+{
+	struct windows_device_priv *priv = _device_priv(transfer->dev_handle->dev);
+	int sub_api = priv->sub_api;
+	int r = LIBUSB_ERROR_IO;
+	if (WinUSBX[sub_api].UnregisterIsochBuffer(isoch_buffer_handle) == TRUE) {
+		r = LIBUSB_SUCCESS;
+	} else
+	{
+		usbi_dbg("UnregisterIsochBuffer failed");
+	}
+	return r;
 }
 
 static bool winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libusb_transfer *transfer)
@@ -3026,10 +3039,15 @@ static bool winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 		ret = WinUSBX[sub_api].WriteIsochPipeAsap(&buffer_handle, 0, transfer->length, FALSE, pwfd->overlapped);
 	}
 
-	unregistered = WinUSBX[sub_api].UnregisterIsochBuffer(buffer_handle);
-	if (!unregistered) {
-		usbi_dbg("UnregisterIsochBuffer failed");
-		return false;
+	if (pwfd->overlapped && (ret || GetLastError() == ERROR_IO_PENDING)) {
+		pwfd->isoch_buffer_handle = buffer_handle;
+		pwfd->free_isoch_buffer = winusbx_free_isoch_buffer;
+	} else {
+		unregistered = WinUSBX[sub_api].UnregisterIsochBuffer(buffer_handle);
+		if (!unregistered) {
+			usbi_dbg("UnregisterIsochBuffer failed");
+			return false;
+		}
 	}
 
 	return ret;

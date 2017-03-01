@@ -69,7 +69,7 @@
 #define CHECK_INIT_POLLING do {if(!is_polling_set) init_polling();} while(0)
 
 // public fd data
-const struct winfd INVALID_WINFD = {-1, INVALID_HANDLE_VALUE, NULL, NULL, NULL, RW_NONE};
+const struct winfd INVALID_WINFD = {-1, INVALID_HANDLE_VALUE, NULL, NULL, NULL, RW_NONE, NULL, NULL};
 struct winfd poll_fd[MAX_FDS];
 // internal fd data
 struct {
