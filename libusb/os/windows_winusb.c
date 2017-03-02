@@ -2029,6 +2029,9 @@ struct winfd *windows_get_fd(struct usbi_transfer *transfer)
 
 void windows_get_overlapped_result(struct usbi_transfer *transfer, struct winfd *pollable_fd, DWORD *io_result, DWORD *io_size)
 {
+	struct libusb_transfer *libusb_transfer;
+	struct windows_transfer_priv *transfer_priv = usbi_transfer_get_os_priv(transfer);
+
 	if (HasOverlappedIoCompletedSync(pollable_fd->overlapped)) {
 		*io_result = NO_ERROR;
 		*io_size = (DWORD)pollable_fd->overlapped->InternalHigh;
@@ -2037,6 +2040,14 @@ void windows_get_overlapped_result(struct usbi_transfer *transfer, struct winfd 
 		*io_result = NO_ERROR;
 	} else {
 		*io_result = GetLastError();
+	}
+
+	libusb_transfer = USBI_TRANSFER_TO_LIBUSB_TRANSFER(transfer);
+	if (libusb_transfer->type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS && *io_result != NO_ERROR && transfer_priv->isoch_not_continue_stream == FALSE)
+	{
+		*io_result = NO_ERROR;
+		*io_size = 0;
+		transfer_priv->isoch_not_continue_stream = TRUE;
 	}
 }
 
@@ -2951,8 +2962,27 @@ static int winusbx_free_isoch_buffer(struct libusb_transfer *transfer, void *iso
 	{
 		usbi_dbg("UnregisterIsochBuffer failed");
 	}
+
+	if (transfer->status == LIBUSB_TRANSFER_COMPLETED)
+	{
+		int i;
+		/* Convert isochronous packet descriptor between Windows and libusb representation.
+		 * Both representation are guaranteed by a check to have the same length in byes.*/
+		PUSBD_ISO_PACKET_DESCRIPTOR usbd_iso_packet_desc = (PUSBD_ISO_PACKET_DESCRIPTOR)transfer->iso_packet_desc;
+		for (i = 0; i < transfer->num_iso_packets; ++i)
+		{
+			int length = (i < transfer->num_iso_packets - 1) ? usbd_iso_packet_desc[i + 1].Offset : usbd_iso_packet_desc[i].Length;
+			int actual_length = usbd_iso_packet_desc[i].Length;
+			USBD_STATUS status = usbd_iso_packet_desc[i].Status;
+
+			transfer->iso_packet_desc[i].length = length;
+			transfer->iso_packet_desc[i].actual_length = actual_length;
+			transfer->iso_packet_desc[i].status = usbd_status_to_libusb_transfer_status(status);
+		}
+	}
 	return r;
 }
+
 
 static bool winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libusb_transfer *transfer)
 {
@@ -3006,7 +3036,7 @@ static bool winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 	}
 
 	ret = WinUSBX[sub_api].RegisterIsochBuffer(pwfd->handle, transfer->endpoint, transfer->buffer,
-						   transfer->length, &buffer_handle);
+						transfer->length, &buffer_handle);
 	if (!ret) {
 		usbi_dbg("RegisterIsochBuffer failed");
 		return false;
@@ -3016,24 +3046,16 @@ static bool winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 
 	/* Initiate the transfer. */
 	if (IS_XFERIN(transfer)) {
-		PUSBD_ISO_PACKET_DESCRIPTOR packet_descs = (PUSBD_ISO_PACKET_DESCRIPTOR)
-			calloc(transfer->num_iso_packets, sizeof(USBD_ISO_PACKET_DESCRIPTOR));
-		if (packet_descs) {
-			ret = WinUSBX[sub_api].ReadIsochPipeAsap(buffer_handle, 0, transfer->length, FALSE,
-								 transfer->num_iso_packets, packet_descs, NULL);
-			if (ret || GetLastError() == ERROR_IO_PENDING) {
-				for (idx = 0; idx < transfer->num_iso_packets; ++idx) {
-					transfer->iso_packet_desc[idx].length = pipe_info_ex.MaximumBytesPerInterval;
-					transfer->iso_packet_desc[idx].actual_length = packet_descs[idx].Length;
-					transfer->iso_packet_desc[idx].status = usbd_status_to_libusb_transfer_status(packet_descs[idx].Status);
-				}
-			}
-		}
-		else {
-			usbi_dbg("Couldn't allocate %d isochronous packets", transfer->num_iso_packets);
-			ret = 0;
-		}
-		safe_free(packet_descs);
+		ret = WinUSBX[sub_api].ReadIsochPipeAsap(buffer_handle, 0, transfer->length, !(transfer_priv->isoch_not_continue_stream),
+			transfer->num_iso_packets, (PUSBD_ISO_PACKET_DESCRIPTOR)transfer->iso_packet_desc, pwfd->overlapped);
+
+		/* Profiling shows that if the ContinueStream parameter of ReadIsochPipeAsap isn't set to TRUE, some frames are left
+		 * empty between two transfers (5 frames in my tests). This is sad as this diminishes the maximum achievable isochronous
+		 * bandwidth. We therefore work around it by trying with TRUE. As we will know asynchronously if the driver failed to
+		 * continue the stream, we return LIBUSB_TRANSFER_COMPLETED to the end-user transfer callback with transfer->length = 0
+		 * so that the transfer must be retried in which case we won't attempt to continue the stream.
+		 * Note that this shouldn't happen ofter as isochronous transfers are inherently periodic. */
+		transfer_priv->isoch_not_continue_stream = FALSE;
 	}
 	else {
 		ret = WinUSBX[sub_api].WriteIsochPipeAsap(&buffer_handle, 0, transfer->length, FALSE, pwfd->overlapped);
