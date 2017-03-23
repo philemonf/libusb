@@ -87,8 +87,6 @@ struct winfd {
 	struct usbi_transfer *itransfer;		// Associated transfer, or NULL if completed
 	cancel_transfer *cancel_fn;		// Function pointer to cancel transfer API
 	enum rw_type rw;				// I/O transfer direction: read *XOR* write (NOT BOTH)
-	int (*free_isoch_buffer)(struct libusb_transfer *transfer, void *isoch_buffer_handle); // The isoch buffer free function helper
-	void *isoch_buffer_handle; // The isoch_buffer_handle to free at the end of the transfer
 };
 extern const struct winfd INVALID_WINFD;
 

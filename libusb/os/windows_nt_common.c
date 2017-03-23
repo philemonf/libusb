@@ -552,13 +552,6 @@ int windows_handle_events(struct libusb_context *ctx, struct pollfd *fds, POLL_N
 		if (found) {
 			windows_get_overlapped_result(transfer, pollable_fd, &io_result, &io_size);
 
-			// Isochronous transfers may require their buffer to be unregistered at this stage.
-			if (pollable_fd->free_isoch_buffer != NULL && pollable_fd->isoch_buffer_handle != NULL) {
-				r = pollable_fd->free_isoch_buffer(USBI_TRANSFER_TO_LIBUSB_TRANSFER(transfer), pollable_fd->isoch_buffer_handle);
-				pollable_fd->free_isoch_buffer = NULL;
-				pollable_fd->isoch_buffer_handle = NULL;
-			}
-
 			usbi_remove_pollfd(ctx, pollable_fd->fd);
 			// let handle_callback free the event using the transfer wfd
 			// If you don't use the transfer wfd, you run a risk of trying to free a

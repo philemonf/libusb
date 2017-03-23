@@ -280,9 +280,11 @@ struct windows_transfer_priv {
 	uint8_t *hid_buffer; // 1 byte extended data buffer, required for HID
 	uint8_t *hid_dest;   // transfer buffer destination, required for HID
 	size_t hid_expected_size;
-	BOOL isoch_not_continue_stream;	// Whether the isoch. stream was to be continued in the last call of libusb_submit_transfer.
-	// As this structure is zeroed out upon initialization and we must try to continue the stream
-	// first, the logit is inverted.
+	int (*free_isoch_buffer)(struct libusb_transfer *transfer, void *isoch_buffer_handle); // The isoch buffer free function helper
+	void *isoch_buffer_handle; // The isoch_buffer_handle to free at the end of the transfer
+	BOOL iso_break_stream;	// Whether the isoch. stream was to be continued in the last call of libusb_submit_transfer.
+	                        // As we this structure is zeroed out upon initialization, we need to use inverse logic here.
+	libusb_transfer_cb_fn iso_user_callback; // Original transfer callback of the user. Might be used for isochronous transfers.
 };
 
 // used to match a device driver (including filter drivers) against a supported API
