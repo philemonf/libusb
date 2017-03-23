@@ -1912,7 +1912,6 @@ void windows_clear_transfer_priv(struct usbi_transfer *itransfer)
 
 	usbi_free_fd(&transfer_priv->pollable_fd);
 	safe_free(transfer_priv->hid_buffer);
-
 	windows_try_free_isoch_buffer(itransfer);
 
 	// When auto claim is in use, attempt to release the auto-claimed interface
@@ -2973,7 +2972,10 @@ static int winusbx_free_isoch_buffer(struct libusb_transfer *transfer, void *iso
 static void WINAPI winusbx_iso_transfer_continue_stream_callback(struct libusb_transfer *transfer)
 {
 	// If this callback is invoked, this means that we attempted to set ContinueStream
-	// to TRUE when calling ReadIsochPipeAsap in winusbx_do_iso_transfer.
+	// to TRUE when calling Read/WriteIsochPipeAsap in winusbx_do_iso_transfer.
+	// The role of this callback is to fallback to ContinueStream = FALSE if the transfer
+	// did not succeed.
+
 	struct windows_transfer_priv *transfer_priv = (struct windows_transfer_priv *)
 			usbi_transfer_get_os_priv(LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer));
 	BOOL fallback = (transfer->status != LIBUSB_TRANSFER_COMPLETED);
@@ -3013,7 +3015,7 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 	struct usbi_transfer *itransfer = LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer);
 	struct windows_transfer_priv *transfer_priv = usbi_transfer_get_os_priv(itransfer);
 
-	/* Query the interface information. */
+	// Query the interface information.
 	ret = WinUSBX[sub_api].QueryInterfaceSettings(pwfd->handle, 0, &interface_desc);
 	if (!ret) {
 		usbi_dbg("Couldn't query interface settings for endpoint 0x%02x. Error code: %d",
@@ -3021,7 +3023,7 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 		return false;
 	}
 
-	/* Query the pipe extended information to find the pipe index corresponding to the endpoint. */
+	// Query the pipe extended information to find the pipe index corresponding to the endpoint.
 	for (idx = 0; idx < interface_desc.bNumEndpoints; ++idx) {
 		ret = WinUSBX[sub_api].QueryPipeEx(pwfd->handle, transfer_priv->interface_number, (UCHAR)idx, &pipe_info_ex);
 		if (!ret) {
@@ -3034,16 +3036,16 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 		}
 	}
 
-	/* Make sure we found the index. */
+	// Make sure we found the index.
 	if (idx >= interface_desc.bNumEndpoints) {
 		usbi_dbg("Couldn't find the isochronous endpoint %02x.", transfer->endpoint);
 		return false;
 	}
 	
 	if (IS_XFERIN(transfer)) {
-		/* WinUSB only supports isochronous transfers spanning a full USB frames. Later, we might be smarter about this
-		 * and allocate a temporary buffer. However, this is harder than it seems as its destruction would depend on overlapped
-		 * IO... */
+		// WinUSB only supports isochronous transfers spanning a full USB frames. Later, we might be smarter about this
+		// and allocate a temporary buffer. However, this is harder than it seems as its destruction would depend on overlapped
+		// IO...
 		iso_transfer_size_multiple = (pipe_info_ex.MaximumBytesPerInterval * 8) / pipe_info_ex.Interval;
 		if (transfer->length % iso_transfer_size_multiple != 0) {
 			usbi_dbg("The length of isochronous buffer must be a multiple of the MaximumBytesPerInterval * 8 / Interval");
@@ -3051,7 +3053,7 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 			return false;
 		}
 	} else {
-		/* If this is an OUT transfer, we make sure the isochronous packets are contiguous as this isn't supported otherwise. */
+		// If this is an OUT transfer, we make sure the isochronous packets are contiguous as this isn't supported otherwise.
 		BOOL size_should_be_zero = FALSE;
 		out_transfer_length = 0;
 		for (idx = 0; idx < transfer->num_iso_packets; ++idx) {
@@ -3067,20 +3069,28 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 		}
 	}
 
-	windows_try_free_isoch_buffer(itransfer); // just in case the user isn't polling
+	windows_try_free_isoch_buffer(itransfer);
+
+	// Register the isochronous buffer to the operating system.
 	ret = WinUSBX[sub_api].RegisterIsochBuffer(pwfd->handle, transfer->endpoint, transfer->buffer, transfer->length, &buffer_handle);
 	if (!ret) {
 		usbi_dbg("RegisterIsochBuffer failed");
 		return false;
 	}
 
-	/* See comment below. */
+	// Important note: the WinUSB_Read/WriteIsochPipeAsap API requires a ContinueStream parameter that tells whether the isochronous
+	// stream must be continued or if the WinUSB driver can schedule the transfer at its conveniance. Profiling subsequent transfers
+	// with ContinueStream = FALSE showed that 5 frames, i.e. about 5 milliseconds, were left empty between each transfer. This
+	// is critical as this greatly diminish the achievable isochronous bandwidth. We solved the problem using the following strategy:
+	// - Transfers are first scheduled with ContinueStream = TRUE and with winusbx_iso_transfer_continue_stream_callback as user callback.
+	// - If the transfer succeeds, winusbx_iso_transfer_continue_stream_callback restore the user callback and calls its.
+	// - If the transfer fails, winusbx_iso_transfer_continue_stream_callback reschedule the transfer and force ContinueStream = FALSE.
 	if (!transfer_priv->iso_break_stream) {
 		transfer_priv->iso_user_callback = transfer->callback;
 		transfer->callback = winusbx_iso_transfer_continue_stream_callback;
 	}
 	
-	/* Initiate the transfer. */
+	// Initiate the transfers.
 	if (IS_XFERIN(transfer)) {
 		ret = WinUSBX[sub_api].ReadIsochPipeAsap(buffer_handle, 0, transfer->length, !transfer_priv->iso_break_stream,
 			transfer->num_iso_packets, (PUSBD_ISO_PACKET_DESCRIPTOR)transfer->iso_packet_desc, pwfd->overlapped);
@@ -3090,12 +3100,10 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 			pwfd->overlapped);
 	}
 
-	/* Profiling shows that if the ContinueStream parameter of ReadIsochPipeAsap isn't set to TRUE, some frames are left
-	 * empty between two transfers (5 frames, i.e. 5 milliseconds are lost). This is sad as this diminishes the maximum
-	 * achievable isochronous bandwidth. We therefore work around it by trying to set it to TRUE and fallback to FALSE
-	 * if it fails. As the failure is asynchronous, we change the user callback to make it transparent to the user. */
+	// Restore the ContinueStream parameter to TRUE.
 	transfer_priv->iso_break_stream = FALSE;
 
+	// As calling UnregisterIsochBuffer terminates the transfer synchronously, we need to do it asynchronously in windows_try_free_isoch_buffer.
 	if (pwfd->overlapped && (ret || GetLastError() == ERROR_IO_PENDING)) {
 		transfer_priv->isoch_buffer_handle = buffer_handle;
 		transfer_priv->free_isoch_buffer = winusbx_free_isoch_buffer;
