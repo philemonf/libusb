@@ -280,6 +280,11 @@ struct windows_transfer_priv {
 	uint8_t *hid_buffer; // 1 byte extended data buffer, required for HID
 	uint8_t *hid_dest;   // transfer buffer destination, required for HID
 	size_t hid_expected_size;
+	int (*free_isoch_buffer)(struct libusb_transfer *transfer, void *isoch_buffer_handle); // The isoch buffer free function helper
+	void *isoch_buffer_handle; // The isoch_buffer_handle to free at the end of the transfer
+	BOOL iso_break_stream;	// Whether the isoch. stream was to be continued in the last call of libusb_submit_transfer.
+	                        // As we this structure is zeroed out upon initialization, we need to use inverse logic here.
+	libusb_transfer_cb_fn iso_user_callback; // Original transfer callback of the user. Might be used for isochronous transfers.
 };
 
 // used to match a device driver (including filter drivers) against a supported API
@@ -759,6 +764,60 @@ typedef BOOL (WINAPI *WinUsb_ResetDevice_t)(
 	WINUSB_INTERFACE_HANDLE InterfaceHandle
 );
 
+typedef void *WINUSB_ISOCH_BUFFER_HANDLE, *PWINUSB_ISOCH_BUFFER_HANDLE;
+
+typedef BOOL (WINAPI *WinUsb_RegisterIsochBuffer_t)(
+	WINUSB_INTERFACE_HANDLE InterfaceHandle,
+	UCHAR PipeID,
+	PVOID Buffer,
+	ULONG BufferLength,
+	PWINUSB_ISOCH_BUFFER_HANDLE BufferHandle
+);
+
+typedef BOOL (WINAPI *WinUsb_UnregisterIsochBuffer_t)(
+	PWINUSB_ISOCH_BUFFER_HANDLE BufferHandle
+);
+
+typedef BOOL (WINAPI *WinUsb_WriteIsochPipeAsap_t)(
+	PWINUSB_ISOCH_BUFFER_HANDLE BufferHandle,
+	ULONG Offset,
+	ULONG Length,
+	BOOL ContinueStream,
+	LPOVERLAPPED Overlapped
+);
+
+typedef LONG USBD_STATUS;
+typedef struct {
+	ULONG Offset;
+	ULONG Length;
+	USBD_STATUS Status;
+} USBD_ISO_PACKET_DESCRIPTOR, *PUSBD_ISO_PACKET_DESCRIPTOR;
+
+typedef BOOL (WINAPI *WinUsb_ReadIsochPipeAsap_t)(
+	PWINUSB_ISOCH_BUFFER_HANDLE BufferHandle,
+	ULONG Offset,
+	ULONG Length,
+	BOOL ContinueStream,
+	ULONG NumberOfPackets,
+	PUSBD_ISO_PACKET_DESCRIPTOR IsoPacketDescriptors,
+	LPOVERLAPPED Overlapped
+);
+
+typedef struct {
+	USBD_PIPE_TYPE PipeType;
+	UCHAR PipeId;
+	USHORT MaximumPacketSize;
+	UCHAR Interval;
+	ULONG MaximumBytesPerInterval;
+} WINUSB_PIPE_INFORMATION_EX, *PWINUSB_PIPE_INFORMATION_EX;
+
+typedef BOOL (WINAPI *WinUsb_QueryPipeEx_t)(
+	PWINUSB_INTERFACE_HANDLE InterfaceHandle,
+	UCHAR AlternateInterfaceHandle,
+	UCHAR PipeIndex,
+	PWINUSB_PIPE_INFORMATION_EX PipeInformationEx
+);
+
 /* /!\ These must match the ones from the official libusbk.h */
 typedef enum _KUSB_FNID {
 	KUSB_FNID_Init,
@@ -839,6 +898,11 @@ struct winusb_interface {
 	WinUsb_SetPowerPolicy_t SetPowerPolicy;
 	WinUsb_WritePipe_t WritePipe;
 	WinUsb_ResetDevice_t ResetDevice;
+	WinUsb_RegisterIsochBuffer_t RegisterIsochBuffer;
+	WinUsb_UnregisterIsochBuffer_t UnregisterIsochBuffer;
+	WinUsb_WriteIsochPipeAsap_t WriteIsochPipeAsap;
+	WinUsb_ReadIsochPipeAsap_t ReadIsochPipeAsap;
+	WinUsb_QueryPipeEx_t QueryPipeEx;
 };
 
 /* hid.dll interface */

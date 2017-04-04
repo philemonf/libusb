@@ -67,6 +67,7 @@ static int winusbx_release_interface(int sub_api, struct libusb_device_handle *d
 static int winusbx_submit_control_transfer(int sub_api, struct usbi_transfer *itransfer);
 static int winusbx_set_interface_altsetting(int sub_api, struct libusb_device_handle *dev_handle, int iface, int altsetting);
 static int winusbx_submit_bulk_transfer(int sub_api, struct usbi_transfer *itransfer);
+static int winusbx_submit_iso_transfer(int sub_api, struct usbi_transfer *itransfer);
 static int winusbx_clear_halt(int sub_api, struct libusb_device_handle *dev_handle, unsigned char endpoint);
 static int winusbx_abort_transfers(int sub_api, struct usbi_transfer *itransfer);
 static int winusbx_abort_control(int sub_api, struct usbi_transfer *itransfer);
@@ -1893,12 +1894,26 @@ static void windows_destroy_device(struct libusb_device *dev)
 	windows_device_priv_release(dev);
 }
 
+void windows_try_free_isoch_buffer(struct usbi_transfer *itransfer)
+{
+	struct windows_transfer_priv *transfer_priv = usbi_transfer_get_os_priv(itransfer);
+
+	// Isochronous transfers may require their buffer to be unregistered at this stage.
+	if (transfer_priv->free_isoch_buffer != NULL && transfer_priv->isoch_buffer_handle != NULL) {
+		transfer_priv->free_isoch_buffer(USBI_TRANSFER_TO_LIBUSB_TRANSFER(itransfer), transfer_priv->isoch_buffer_handle);
+		transfer_priv->free_isoch_buffer = NULL;
+		transfer_priv->isoch_buffer_handle = NULL;
+	}
+}
+
 void windows_clear_transfer_priv(struct usbi_transfer *itransfer)
 {
 	struct windows_transfer_priv *transfer_priv = usbi_transfer_get_os_priv(itransfer);
 
 	usbi_free_fd(&transfer_priv->pollable_fd);
 	safe_free(transfer_priv->hid_buffer);
+	windows_try_free_isoch_buffer(itransfer);
+
 	// When auto claim is in use, attempt to release the auto-claimed interface
 	auto_release(itransfer);
 }
@@ -2270,7 +2285,7 @@ const struct windows_usb_api_backend usb_api_backend[USB_API_MAX] = {
 		winusbx_clear_halt,
 		winusbx_reset_device,
 		winusbx_submit_bulk_transfer,
-		unsupported_submit_iso_transfer,
+		winusbx_submit_iso_transfer,
 		winusbx_submit_control_transfer,
 		winusbx_abort_control,
 		winusbx_abort_transfers,
@@ -2310,6 +2325,14 @@ const struct windows_usb_api_backend usb_api_backend[USB_API_MAX] = {
 			WinUSBX[i].fn = (WinUsb_##fn##_t)GetProcAddress(h, "WinUsb_" #fn);	\
 		else										\
 			pLibK_GetProcAddress((PVOID *)&WinUSBX[i].fn, i, KUSB_FNID_##fn);	\
+	} while (0)
+
+#define WinUSBOnly_Set(fn)									\
+	do {											\
+		if (native_winusb)								\
+			WinUSBX[i].fn = (WinUsb_##fn##_t)GetProcAddress(h, "WinUsb_" #fn);	\
+		else                                                                            \
+			WinUSBX[i].fn = NULL;                                                   \
 	} while (0)
 
 static int winusbx_init(int sub_api, struct libusb_context *ctx)
@@ -2370,6 +2393,12 @@ static int winusbx_init(int sub_api, struct libusb_context *ctx)
 		WinUSBX_Set(SetPipePolicy);
 		WinUSBX_Set(SetPowerPolicy);
 		WinUSBX_Set(WritePipe);
+		WinUSBOnly_Set(RegisterIsochBuffer);
+		WinUSBOnly_Set(UnregisterIsochBuffer);
+		WinUSBOnly_Set(WriteIsochPipeAsap);
+		WinUSBOnly_Set(ReadIsochPipeAsap);
+		WinUSBOnly_Set(QueryPipeEx);
+
 		if (!native_winusb)
 			WinUSBX_Set(ResetDevice);
 
@@ -2809,14 +2838,16 @@ static int winusbx_submit_transfer(int sub_api, struct usbi_transfer *itransfer,
 	struct windows_device_handle_priv *handle_priv = _device_handle_priv(transfer->dev_handle);
 	struct windows_device_priv *priv = _device_priv(transfer->dev_handle->dev);
 	HANDLE winusb_handle;
-	bool ret;
+	int ret;
 	int current_interface;
 	struct winfd wfd;
 
 	CHECK_WINUSBX_AVAILABLE(sub_api);
 
 	if (winusbx_do_additional_checks) {
-		winusbx_do_additional_checks(sub_api);
+		ret = winusbx_do_additional_checks(sub_api);
+		if (ret != LIBUSB_SUCCESS)
+			return ret;
 	}
 
 	transfer_priv->pollable_fd = INVALID_WINFD;
@@ -2837,12 +2868,16 @@ static int winusbx_submit_transfer(int sub_api, struct usbi_transfer *itransfer,
 		return LIBUSB_ERROR_NO_MEM;
 
 	ret = winusbx_do_transfer(sub_api, &wfd, transfer);
-
 	if (!ret) {
-		if (GetLastError() != ERROR_IO_PENDING) {
+		int last_error = GetLastError();
+		if (last_error != ERROR_IO_PENDING) {
 			usbi_err(ctx, "ReadPipe/WritePipe failed: %s", windows_error_str(0));
 			usbi_free_fd(&wfd);
-			return LIBUSB_ERROR_IO;
+			if (last_error == ERROR_INVALID_PARAMETER) {
+				return LIBUSB_ERROR_INVALID_PARAM;
+			} else {
+				return LIBUSB_ERROR_IO;
+			}
 		}
 	} else {
 		wfd.overlapped->Internal = STATUS_COMPLETED_SYNCHRONOUSLY;
@@ -2855,7 +2890,7 @@ static int winusbx_submit_transfer(int sub_api, struct usbi_transfer *itransfer,
 	return LIBUSB_SUCCESS;
 }
 
-static bool winusbx_do_bulk_transfer(int sub_api, struct winfd *pwfd, struct libusb_transfer *transfer)
+static BOOL winusbx_do_bulk_transfer(int sub_api, struct winfd *pwfd, struct libusb_transfer *transfer)
 {
 	if (IS_XFERIN(transfer)) {
 		usbi_dbg("reading %d bytes", transfer->length);
@@ -2869,6 +2904,228 @@ static bool winusbx_do_bulk_transfer(int sub_api, struct winfd *pwfd, struct lib
 static int winusbx_submit_bulk_transfer(int sub_api, struct usbi_transfer *itransfer)
 {
 	return winusbx_submit_transfer(sub_api, itransfer, NULL, winusbx_do_bulk_transfer);
+}
+
+static int winusbx_is_iso_supported(int sub_api)
+{
+#	define WINUSBX_CHECK_API_SUPPORTED(API)       \
+	if (WinUSBX[sub_api].API == NULL)             \
+	{                                             \
+		usbi_dbg(#API " isn't available");        \
+		return LIBUSB_ERROR_NOT_SUPPORTED;        \
+	}
+
+	WINUSBX_CHECK_API_SUPPORTED(RegisterIsochBuffer);
+	WINUSBX_CHECK_API_SUPPORTED(ReadIsochPipeAsap);
+	WINUSBX_CHECK_API_SUPPORTED(WriteIsochPipeAsap);
+	WINUSBX_CHECK_API_SUPPORTED(UnregisterIsochBuffer);
+	WINUSBX_CHECK_API_SUPPORTED(QueryPipeEx);
+
+	if (sizeof(struct libusb_iso_packet_descriptor) != sizeof(USBD_ISO_PACKET_DESCRIPTOR)) {
+		usbi_dbg("Windows and libusb isochronous packet descriptor doesn't match.");
+		return LIBUSB_ERROR_NOT_SUPPORTED;
+	}
+
+	return LIBUSB_SUCCESS;
+}
+
+static enum libusb_transfer_status usbd_status_to_libusb_transfer_status(USBD_STATUS status)
+{
+	/* Based on https://msdn.microsoft.com/en-us/library/windows/hardware/ff539136(v=vs.85).aspx :
+	 * USBD_STATUS have the most significant 4 bits indicating overall status and the rest gives the details. */
+	switch (status >> 28) {
+	case 0x00: /* USBD_STATUS_SUCCESS */
+		return LIBUSB_TRANSFER_COMPLETED;
+	case 0x01: /* USBD_STATUS_PENDING */
+		return LIBUSB_TRANSFER_COMPLETED;
+	default: /* USBD_STATUS_ERROR */
+		switch (status & 0x0fffffff ) {
+		case 0xC0006000: /* USBD_STATUS_TIMEOUT */
+			return LIBUSB_TRANSFER_TIMED_OUT;
+		case 0xC0010000: /* USBD_STATUS_CANCELED */
+			return LIBUSB_TRANSFER_CANCELLED;
+		case 0xC0000030: /* USBD_STATUS_ENDPOINT_HALTED */
+			return LIBUSB_TRANSFER_STALL;
+		case 0xC0007000: /* USBD_STATUS_DEVICE_GONE */
+			return LIBUSB_TRANSFER_NO_DEVICE;
+		default:
+			usbi_dbg("USBD_STATUS 0x%08x translated to LIBUSB_TRANSFER_ERROR", status);
+			return LIBUSB_TRANSFER_ERROR;
+		}
+	}
+}
+
+static int winusbx_free_isoch_buffer(struct libusb_transfer *transfer, void *isoch_buffer_handle)
+{
+	struct windows_device_priv *priv = _device_priv(transfer->dev_handle->dev);
+	int sub_api = priv->sub_api;
+	int r = LIBUSB_ERROR_IO;
+	if (WinUSBX[sub_api].UnregisterIsochBuffer(isoch_buffer_handle) == TRUE) {
+		r = LIBUSB_SUCCESS;
+	} else {
+		usbi_dbg("UnregisterIsochBuffer failed");
+	}
+	return r;
+}
+
+static void WINAPI winusbx_iso_transfer_continue_stream_callback(struct libusb_transfer *transfer)
+{
+	// If this callback is invoked, this means that we attempted to set ContinueStream
+	// to TRUE when calling Read/WriteIsochPipeAsap in winusbx_do_iso_transfer.
+	// The role of this callback is to fallback to ContinueStream = FALSE if the transfer
+	// did not succeed.
+
+	struct windows_transfer_priv *transfer_priv = (struct windows_transfer_priv *)
+			usbi_transfer_get_os_priv(LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer));
+	BOOL fallback = (transfer->status != LIBUSB_TRANSFER_COMPLETED);
+	int idx;
+
+	// Restore the user callback
+	transfer->callback = transfer_priv->iso_user_callback;
+
+	for (idx = 0; idx < transfer->num_iso_packets && !fallback; ++idx) {
+		if (transfer->iso_packet_desc[idx].status != LIBUSB_TRANSFER_COMPLETED) {
+			fallback = TRUE;
+		}
+	}
+
+	if (!fallback) {
+		// If the transfer was successful, we restore the user callback and call it.
+		if (transfer->callback) {
+			transfer->callback(transfer);
+		}
+	} else {
+		// If the transfer wasn't successful we reschedule the transfer while forcing it
+		// not to continue the stream. This might results in a 5-ms delay.
+		transfer_priv->iso_break_stream = TRUE;
+		libusb_submit_transfer(transfer);
+	}
+}
+
+static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libusb_transfer *transfer)
+{
+	BOOL ret, unregistered;
+	USB_INTERFACE_DESCRIPTOR interface_desc;
+	WINUSB_PIPE_INFORMATION_EX pipe_info_ex;
+	WINUSB_ISOCH_BUFFER_HANDLE buffer_handle;
+	ULONG iso_transfer_size_multiple;
+	UCHAR altSetting = 0;
+	int out_transfer_length;
+	int idx;
+	struct usbi_transfer *itransfer = LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer);
+	struct windows_transfer_priv *transfer_priv = usbi_transfer_get_os_priv(itransfer);
+
+	// Query the interface information.
+	ret = WinUSBX[sub_api].QueryInterfaceSettings(pwfd->handle, 0, &interface_desc);
+	if (!ret) {
+		usbi_dbg("Couldn't query interface settings for endpoint 0x%02x. Error code: %d",
+			 transfer->endpoint, GetLastError());
+		return false;
+	}
+
+	ret = WinUSBX[sub_api].GetCurrentAlternateSetting(pwfd->handle, &altSetting);
+	if (!ret) {
+		usbi_dbg("Couldn't get current alt. setting. Error code: %d", GetLastError());
+		return false;
+	}
+
+	// Query the pipe extended information to find the pipe index corresponding to the endpoint.
+	for (idx = 0; idx < interface_desc.bNumEndpoints; ++idx) {
+		ret = WinUSBX[sub_api].QueryPipeEx(pwfd->handle, altSetting, (UCHAR)idx, &pipe_info_ex);
+		if (!ret) {
+			usbi_dbg("Couldn't query interface settings for USB pipe %d. Error code: %d", idx, GetLastError());
+			return false;
+		}
+
+		if (pipe_info_ex.PipeId == transfer->endpoint && pipe_info_ex.PipeType == UsbdPipeTypeIsochronous) {
+			break;
+		}
+	}
+
+	// Make sure we found the index.
+	if (idx >= interface_desc.bNumEndpoints) {
+		usbi_dbg("Couldn't find the isochronous endpoint %02x.", transfer->endpoint);
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return false;
+	}
+
+	if (IS_XFERIN(transfer)) {
+		// WinUSB only supports isochronous transfers spanning a full USB frames. Later, we might be smarter about this
+		// and allocate a temporary buffer. However, this is harder than it seems as its destruction would depend on overlapped
+		// IO...
+		iso_transfer_size_multiple = (pipe_info_ex.MaximumBytesPerInterval * 8) / pipe_info_ex.Interval;
+		if (transfer->length % iso_transfer_size_multiple != 0) {
+			usbi_dbg("The length of isochronous buffer must be a multiple of the MaximumBytesPerInterval * 8 / Interval");
+			SetLastError(ERROR_INVALID_PARAMETER);
+			return false;
+		}
+	} else {
+		// If this is an OUT transfer, we make sure the isochronous packets are contiguous as this isn't supported otherwise.
+		BOOL size_should_be_zero = FALSE;
+		out_transfer_length = 0;
+		for (idx = 0; idx < transfer->num_iso_packets; ++idx) {
+			struct libusb_iso_packet_descriptor *iso_packet = &transfer->iso_packet_desc[idx];
+			if ((size_should_be_zero && transfer->iso_packet_desc[idx].actual_length != 0) ||
+				(iso_packet->length != transfer->iso_packet_desc[idx].actual_length && idx + 1 < transfer->num_iso_packets && transfer->iso_packet_desc[idx + 1].actual_length > 0)) {
+				SetLastError(ERROR_INVALID_PARAMETER);
+				return false;
+			}
+
+			size_should_be_zero = (transfer->iso_packet_desc[idx].actual_length == 0);
+			out_transfer_length += transfer->iso_packet_desc[idx].actual_length;
+		}
+	}
+
+	windows_try_free_isoch_buffer(itransfer);
+
+	// Register the isochronous buffer to the operating system.
+	ret = WinUSBX[sub_api].RegisterIsochBuffer(pwfd->handle, transfer->endpoint, transfer->buffer, transfer->length, &buffer_handle);
+	if (!ret) {
+		usbi_dbg("RegisterIsochBuffer failed");
+		return false;
+	}
+
+	// Important note: the WinUSB_Read/WriteIsochPipeAsap API requires a ContinueStream parameter that tells whether the isochronous
+	// stream must be continued or if the WinUSB driver can schedule the transfer at its conveniance. Profiling subsequent transfers
+	// with ContinueStream = FALSE showed that 5 frames, i.e. about 5 milliseconds, were left empty between each transfer. This
+	// is critical as this greatly diminish the achievable isochronous bandwidth. We solved the problem using the following strategy:
+	// - Transfers are first scheduled with ContinueStream = TRUE and with winusbx_iso_transfer_continue_stream_callback as user callback.
+	// - If the transfer succeeds, winusbx_iso_transfer_continue_stream_callback restore the user callback and calls its.
+	// - If the transfer fails, winusbx_iso_transfer_continue_stream_callback reschedule the transfer and force ContinueStream = FALSE.
+	if (!transfer_priv->iso_break_stream) {
+		transfer_priv->iso_user_callback = transfer->callback;
+		transfer->callback = winusbx_iso_transfer_continue_stream_callback;
+	}
+
+	// Initiate the transfers.
+	if (IS_XFERIN(transfer)) {
+		ret = WinUSBX[sub_api].ReadIsochPipeAsap(buffer_handle, 0, transfer->length, !transfer_priv->iso_break_stream,
+			transfer->num_iso_packets, (PUSBD_ISO_PACKET_DESCRIPTOR)transfer->iso_packet_desc, pwfd->overlapped);
+	}
+	else {
+		ret = WinUSBX[sub_api].WriteIsochPipeAsap(buffer_handle, 0, out_transfer_length, !transfer_priv->iso_break_stream,
+			pwfd->overlapped);
+	}
+
+	// Restore the ContinueStream parameter to TRUE.
+	transfer_priv->iso_break_stream = FALSE;
+
+	// As calling UnregisterIsochBuffer terminates the transfer synchronously, we need to do it asynchronously in windows_try_free_isoch_buffer.
+	if (pwfd->overlapped && (ret || GetLastError() == ERROR_IO_PENDING)) {
+		transfer_priv->isoch_buffer_handle = buffer_handle;
+		transfer_priv->free_isoch_buffer = winusbx_free_isoch_buffer;
+	} else {
+		if (!WinUSBX[sub_api].UnregisterIsochBuffer(buffer_handle)) {
+			ret = false;
+		}
+	}
+
+	return ret;
+}
+
+static int winusbx_submit_iso_transfer(int sub_api, struct usbi_transfer *itransfer)
+{
+	return winusbx_submit_transfer(sub_api, itransfer, winusbx_is_iso_supported, winusbx_do_iso_transfer);
 }
 
 static int winusbx_clear_halt(int sub_api, struct libusb_device_handle *dev_handle, unsigned char endpoint)
@@ -3001,7 +3258,33 @@ static int winusbx_reset_device(int sub_api, struct libusb_device_handle *dev_ha
 
 static int winusbx_copy_transfer_data(int sub_api, struct usbi_transfer *itransfer, uint32_t io_size)
 {
+	struct libusb_transfer *transfer = USBI_TRANSFER_TO_LIBUSB_TRANSFER(itransfer);
 	itransfer->transferred += io_size;
+
+	if (transfer->type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS) {
+		int i;
+		if (IS_XFERIN(transfer)) {
+			/* Convert isochronous packet descriptor between Windows and libusb representation.
+			 * Both representation are guaranteed to have the same length in bytes in winusbx_is_iso_supported.*/
+			PUSBD_ISO_PACKET_DESCRIPTOR usbd_iso_packet_desc = (PUSBD_ISO_PACKET_DESCRIPTOR)transfer->iso_packet_desc;
+			for (i = 0; i < transfer->num_iso_packets; ++i)
+			{
+				int length = (i < transfer->num_iso_packets - 1) ? (usbd_iso_packet_desc[i + 1].Offset - usbd_iso_packet_desc[i].Offset) : usbd_iso_packet_desc[i].Length;
+				int actual_length = usbd_iso_packet_desc[i].Length;
+				USBD_STATUS status = usbd_iso_packet_desc[i].Status;
+
+				transfer->iso_packet_desc[i].length = length;
+				transfer->iso_packet_desc[i].actual_length = actual_length;
+				transfer->iso_packet_desc[i].status = usbd_status_to_libusb_transfer_status(status);
+			}
+		} else {
+			for (i = 0; i < transfer->num_iso_packets; ++i)
+			{
+				transfer->iso_packet_desc[i].status = LIBUSB_TRANSFER_COMPLETED;
+			}
+		}
+	}
+
 	return LIBUSB_TRANSFER_COMPLETED;
 }
 
