@@ -2799,7 +2799,9 @@ static int winusbx_set_interface_altsetting(int sub_api, struct libusb_device_ha
 	return LIBUSB_SUCCESS;
 }
 
-static int winusbx_submit_bulk_transfer(int sub_api, struct usbi_transfer *itransfer)
+static int winusbx_submit_transfer(int sub_api, struct usbi_transfer *itransfer,
+	int (*winusbx_do_additional_checks)(int sub_api),
+	bool (*winusbx_do_transfer)(int sub_api, struct winfd *pwfd, struct libusb_transfer *transfer))
 {
 	struct libusb_transfer *transfer = USBI_TRANSFER_TO_LIBUSB_TRANSFER(itransfer);
 	struct libusb_context *ctx = DEVICE_CTX(transfer->dev_handle->dev);
@@ -2812,6 +2814,10 @@ static int winusbx_submit_bulk_transfer(int sub_api, struct usbi_transfer *itran
 	struct winfd wfd;
 
 	CHECK_WINUSBX_AVAILABLE(sub_api);
+
+	if (winusbx_do_additional_checks) {
+		winusbx_do_additional_checks(sub_api);
+	}
 
 	transfer_priv->pollable_fd = INVALID_WINFD;
 
@@ -2830,13 +2836,7 @@ static int winusbx_submit_bulk_transfer(int sub_api, struct usbi_transfer *itran
 	if (wfd.fd < 0)
 		return LIBUSB_ERROR_NO_MEM;
 
-	if (IS_XFERIN(transfer)) {
-		usbi_dbg("reading %d bytes", transfer->length);
-		ret = WinUSBX[sub_api].ReadPipe(wfd.handle, transfer->endpoint, transfer->buffer, transfer->length, NULL, wfd.overlapped);
-	} else {
-		usbi_dbg("writing %d bytes", transfer->length);
-		ret = WinUSBX[sub_api].WritePipe(wfd.handle, transfer->endpoint, transfer->buffer, transfer->length, NULL, wfd.overlapped);
-	}
+	ret = winusbx_do_transfer(sub_api, &wfd, transfer);
 
 	if (!ret) {
 		if (GetLastError() != ERROR_IO_PENDING) {
@@ -2853,6 +2853,22 @@ static int winusbx_submit_bulk_transfer(int sub_api, struct usbi_transfer *itran
 	transfer_priv->interface_number = (uint8_t)current_interface;
 
 	return LIBUSB_SUCCESS;
+}
+
+static bool winusbx_do_bulk_transfer(int sub_api, struct winfd *pwfd, struct libusb_transfer *transfer)
+{
+	if (IS_XFERIN(transfer)) {
+		usbi_dbg("reading %d bytes", transfer->length);
+		return WinUSBX[sub_api].ReadPipe(pwfd->handle, transfer->endpoint, transfer->buffer, transfer->length, NULL, pwfd->overlapped);
+	} else {
+		usbi_dbg("writing %d bytes", transfer->length);
+		return WinUSBX[sub_api].WritePipe(pwfd->handle, transfer->endpoint, transfer->buffer, transfer->length, NULL, pwfd->overlapped);
+	}
+}
+
+static int winusbx_submit_bulk_transfer(int sub_api, struct usbi_transfer *itransfer)
+{
+	return winusbx_submit_transfer(sub_api, itransfer, NULL, winusbx_do_bulk_transfer);
 }
 
 static int winusbx_clear_halt(int sub_api, struct libusb_device_handle *dev_handle, unsigned char endpoint)
