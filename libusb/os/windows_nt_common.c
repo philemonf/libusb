@@ -506,8 +506,12 @@ void windows_handle_callback(struct usbi_transfer *itransfer, uint32_t io_result
 	case LIBUSB_TRANSFER_TYPE_CONTROL:
 	case LIBUSB_TRANSFER_TYPE_BULK:
 	case LIBUSB_TRANSFER_TYPE_INTERRUPT:
-	case LIBUSB_TRANSFER_TYPE_ISOCHRONOUS:
 		windows_transfer_callback(itransfer, io_result, io_size);
+		break;
+	case LIBUSB_TRANSFER_TYPE_ISOCHRONOUS:
+		 /* Isoc transfer status will be checked later (in winusbx_iso_transfer_continue_stream_callback)
+		 * per every isoc packet basis */
+		windows_transfer_callback(itransfer, NO_ERROR, io_size);
 		break;
 	case LIBUSB_TRANSFER_TYPE_BULK_STREAM:
 		usbi_warn(ITRANSFER_CTX(itransfer), "bulk stream transfers are not yet supported on this platform");

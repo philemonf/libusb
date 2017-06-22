@@ -2977,15 +2977,17 @@ static void WINAPI winusbx_iso_transfer_continue_stream_callback(struct libusb_t
 
 	struct windows_transfer_priv *transfer_priv = (struct windows_transfer_priv *)
 			usbi_transfer_get_os_priv(LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer));
-	BOOL fallback = (transfer->status != LIBUSB_TRANSFER_COMPLETED);
+	BOOL fallback = TRUE;
 	int idx;
 
 	// Restore the user callback
 	transfer->callback = transfer_priv->iso_user_callback;
 
-	for (idx = 0; idx < transfer->num_iso_packets && !fallback; ++idx) {
-		if (transfer->iso_packet_desc[idx].status != LIBUSB_TRANSFER_COMPLETED) {
-			fallback = TRUE;
+	for (idx = 0; idx < transfer->num_iso_packets; ++idx) {
+		if (transfer->iso_packet_desc[idx].status == LIBUSB_TRANSFER_COMPLETED) {
+			/* at least one isoc packet completed, so all transaction is success then */
+			fallback = FALSE;
+			break;
 		}
 	}
 
