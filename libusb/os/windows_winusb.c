@@ -3004,7 +3004,7 @@ static void WINAPI winusbx_iso_transfer_continue_stream_callback(struct libusb_t
 
 static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libusb_transfer *transfer)
 {
-	BOOL ret, unregistered;
+	BOOL ret;
 	USB_INTERFACE_DESCRIPTOR interface_desc;
 	WINUSB_PIPE_INFORMATION_EX pipe_info_ex;
 	WINUSB_ISOCH_BUFFER_HANDLE buffer_handle;
@@ -3015,17 +3015,17 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 	struct usbi_transfer *itransfer = LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer);
 	struct windows_transfer_priv *transfer_priv = usbi_transfer_get_os_priv(itransfer);
 
-	// Query the interface information.
-	ret = WinUSBX[sub_api].QueryInterfaceSettings(pwfd->handle, 0, &interface_desc);
-	if (!ret) {
-		usbi_dbg("Couldn't query interface settings for endpoint 0x%02x. Error code: %d",
-			 transfer->endpoint, GetLastError());
-		return false;
-	}
-
 	ret = WinUSBX[sub_api].GetCurrentAlternateSetting(pwfd->handle, &altSetting);
 	if (!ret) {
 		usbi_dbg("Couldn't get current alt. setting. Error code: %d", GetLastError());
+		return false;
+	}
+
+	// Query the interface information.
+	ret = WinUSBX[sub_api].QueryInterfaceSettings(pwfd->handle, altSetting, &interface_desc);
+	if (!ret) {
+		usbi_dbg("Couldn't query interface settings for endpoint 0x%02x. Error code: %d",
+			 transfer->endpoint, GetLastError());
 		return false;
 	}
 
