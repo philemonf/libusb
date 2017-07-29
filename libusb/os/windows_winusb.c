@@ -3010,7 +3010,7 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 	WINUSB_ISOCH_BUFFER_HANDLE buffer_handle;
 	ULONG iso_transfer_size_multiple;
 	UCHAR altSetting = 0;
-	int out_transfer_length;
+	int out_transfer_length = 0;
 	int idx;
 	struct usbi_transfer *itransfer = LIBUSB_TRANSFER_TO_USBI_TRANSFER(transfer);
 	struct windows_transfer_priv *transfer_priv = usbi_transfer_get_os_priv(itransfer);
@@ -3064,15 +3064,14 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 		BOOL size_should_be_zero = FALSE;
 		out_transfer_length = 0;
 		for (idx = 0; idx < transfer->num_iso_packets; ++idx) {
-			struct libusb_iso_packet_descriptor *iso_packet = &transfer->iso_packet_desc[idx];
-			if ((size_should_be_zero && transfer->iso_packet_desc[idx].actual_length != 0) ||
-				(iso_packet->length != transfer->iso_packet_desc[idx].actual_length && idx + 1 < transfer->num_iso_packets && transfer->iso_packet_desc[idx + 1].actual_length > 0)) {
+			if ((size_should_be_zero && transfer->iso_packet_desc[idx].length != 0) ||
+				(transfer->iso_packet_desc[idx].length != pipe_info_ex.MaximumBytesPerInterval && idx + 1 < transfer->num_iso_packets && transfer->iso_packet_desc[idx + 1].length > 0)) {
 				SetLastError(ERROR_INVALID_PARAMETER);
 				return false;
 			}
 
-			size_should_be_zero = (transfer->iso_packet_desc[idx].actual_length == 0);
-			out_transfer_length += transfer->iso_packet_desc[idx].actual_length;
+			size_should_be_zero = (transfer->iso_packet_desc[idx].length == 0);
+			out_transfer_length += transfer->iso_packet_desc[idx].length;
 		}
 	}
 
