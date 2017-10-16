@@ -764,7 +764,7 @@ typedef BOOL (WINAPI *WinUsb_ResetDevice_t)(
 	WINUSB_INTERFACE_HANDLE InterfaceHandle
 );
 
-typedef void *WINUSB_ISOCH_BUFFER_HANDLE, *PWINUSB_ISOCH_BUFFER_HANDLE;
+typedef PVOID WINUSB_ISOCH_BUFFER_HANDLE, *PWINUSB_ISOCH_BUFFER_HANDLE;
 
 typedef BOOL (WINAPI *WinUsb_RegisterIsochBuffer_t)(
 	WINUSB_INTERFACE_HANDLE InterfaceHandle,
@@ -775,11 +775,11 @@ typedef BOOL (WINAPI *WinUsb_RegisterIsochBuffer_t)(
 );
 
 typedef BOOL (WINAPI *WinUsb_UnregisterIsochBuffer_t)(
-	PWINUSB_ISOCH_BUFFER_HANDLE BufferHandle
+	WINUSB_ISOCH_BUFFER_HANDLE BufferHandle
 );
 
 typedef BOOL (WINAPI *WinUsb_WriteIsochPipeAsap_t)(
-	PWINUSB_ISOCH_BUFFER_HANDLE BufferHandle,
+	WINUSB_ISOCH_BUFFER_HANDLE BufferHandle,
 	ULONG Offset,
 	ULONG Length,
 	BOOL ContinueStream,
@@ -812,7 +812,7 @@ typedef struct {
 } WINUSB_PIPE_INFORMATION_EX, *PWINUSB_PIPE_INFORMATION_EX;
 
 typedef BOOL (WINAPI *WinUsb_QueryPipeEx_t)(
-	PWINUSB_INTERFACE_HANDLE InterfaceHandle,
+	WINUSB_INTERFACE_HANDLE InterfaceHandle,
 	UCHAR AlternateInterfaceHandle,
 	UCHAR PipeIndex,
 	PWINUSB_PIPE_INFORMATION_EX PipeInformationEx

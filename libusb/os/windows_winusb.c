@@ -3006,7 +3006,7 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 {
 	BOOL ret;
 	USB_INTERFACE_DESCRIPTOR interface_desc;
-	WINUSB_PIPE_INFORMATION_EX pipe_info_ex;
+	WINUSB_PIPE_INFORMATION_EX pipe_info_ex = { 0 };
 	WINUSB_ISOCH_BUFFER_HANDLE buffer_handle;
 	ULONG iso_transfer_size_multiple;
 	UCHAR altSetting = 0;
@@ -3050,10 +3050,17 @@ static BOOL winusbx_do_iso_transfer(int sub_api, struct winfd *pwfd, struct libu
 	}
 
 	if (IS_XFERIN(transfer)) {
+		int interval = pipe_info_ex.Interval;
+
+		// For high-speed and SuperSpeed device, the interval is 2**(bInterval-1).
+		if (libusb_get_device_speed(libusb_get_device(transfer->dev_handle)) >= LIBUSB_SPEED_HIGH) {
+			interval = (1 << (pipe_info_ex.Interval - 1));
+		}
+
 		// WinUSB only supports isochronous transfers spanning a full USB frames. Later, we might be smarter about this
 		// and allocate a temporary buffer. However, this is harder than it seems as its destruction would depend on overlapped
 		// IO...
-		iso_transfer_size_multiple = (pipe_info_ex.MaximumBytesPerInterval * 8) / pipe_info_ex.Interval;
+		iso_transfer_size_multiple = (pipe_info_ex.MaximumBytesPerInterval * 8) / interval;
 		if (transfer->length % iso_transfer_size_multiple != 0) {
 			usbi_dbg("The length of isochronous buffer must be a multiple of the MaximumBytesPerInterval * 8 / Interval");
 			SetLastError(ERROR_INVALID_PARAMETER);
