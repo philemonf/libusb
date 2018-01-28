@@ -177,14 +177,7 @@ windows)
 	LTLDFLAGS="${LTLDFLAGS} -avoid-version -Wl,--add-stdcall-alias"
 	AC_DEFINE([POLL_NFDS_TYPE],[unsigned int],[type of second poll() argument])
 	AC_DEFINE([WINVER], 0x0501, [Oldest Windows version supported])
-
-	AC_ARG_ENABLE([usbdk],
-		[AC_HELP_STRING([--enable-usbdk], [use UsbDk Windows backend [default=no]])],
-		[], [enable_usbdk=no])
-		if test "x$enable_usbdk" = xyes; then
-		    AC_DEFINE(USE_USBDK, 1, [Use UsbDk Windows backend])
-		fi
-		AC_SUBST(USE_USBDK)
+	AC_DEFINE([_WIN32_WINNT], 0x0501, [Oldest Windows version supported])
 	;;
 haiku)
 	AC_DEFINE(OS_HAIKU, 1, [Haiku backend])
@@ -207,7 +200,6 @@ AM_CONDITIONAL(OS_HAIKU, test "x$backend" = xhaiku)
 AM_CONDITIONAL(THREADS_POSIX, test "x$threads" = xposix)
 AM_CONDITIONAL(CREATE_IMPORT_LIB, test "x$create_import_lib" = xyes)
 AM_CONDITIONAL(USE_UDEV, test "x$enable_udev" = xyes)
-AM_CONDITIONAL(USE_USBDK, test "x$enable_usbdk" = xyes)
 if test "x$threads" = xposix; then
 	AC_DEFINE(THREADS_POSIX, 1, [Use POSIX Threads])
 fi
@@ -223,7 +215,7 @@ if test "x$use_timerfd" = xyes -a "x$timerfd_h" = x0; then
 	AC_MSG_ERROR([timerfd header not available; glibc 2.9+ required])
 fi
 
-AC_CHECK_DECL([TFD_NONBLOCK], [tfd_hdr_ok=yes], [tfd_hdr_ok=no], [#include <sys/timerfd.h>])
+AC_CHECK_DECLS([TFD_NONBLOCK, TFD_CLOEXEC], [tfd_hdr_ok=yes], [tfd_hdr_ok=no], [#include <sys/timerfd.h>])
 if test "x$use_timerfd" = xyes -a "x$tfd_hdr_ok" = xno; then
 	AC_MSG_ERROR([timerfd header not usable; glibc 2.9+ required])
 fi
@@ -240,6 +232,7 @@ else
 	fi
 fi
 
+AC_CHECK_FUNCS([pipe2])
 AC_CHECK_TYPES([struct timespec])
 
 # Message logging
